@@ -1,6 +1,6 @@
 # algosim — Real‑Time Algorithmic Trading Simulator (MVP, ZMQ)
 
-![The Python Quants — TPQ Logo](https://hilpisch.com/tpq_logo.png)
+<img src="https://hilpisch.com/tpq_logo.png" alt="The Python Quants — TPQ Logo" width="30%" />
 
 algosim is a small, local-first teaching tool that simulates real‑time prices, lets you plug in tiny Python strategies, and streams events over ZeroMQ. A Streamlit UI provides controls and live views; a CLI supports headless runs and reproducible replays.
 
@@ -43,4 +43,3 @@ In the UI sidebar: Load config → choose render mode (Text/Chart) → Start SUB
 
 - Implemented: simulator, ZMQ transport, Streamlit subscriber, CLI, strategy template
 - Next: broker + portfolio + fills, strategy host, recorder, metrics, tests
-
