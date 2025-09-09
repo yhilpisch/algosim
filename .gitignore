@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+ENV/
+
+# Packaging / build
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Testing
+.pytest_cache/
+.coverage*
+
+# IDEs / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Project artifacts
+runs/
+
+# Streamlit
+.streamlit/**/credentials.toml
+.streamlit/**/secrets.toml
+

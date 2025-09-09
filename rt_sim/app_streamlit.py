@@ -40,16 +40,21 @@ def ensure_state():
     if "conflate" not in st.session_state:
         st.session_state.conflate = True
     if "queue" not in st.session_state:
-        st.session_state.queue = Queue(maxsize=10000)
+        # size 1 when conflating, large otherwise
+        st.session_state.queue = Queue(maxsize=(1 if st.session_state.conflate else 10000))
 
 
 def start_listener(cfg):
     event: threading.Event = st.session_state.listener_event
+    # If an old listener is running, stop it to recreate with current conflate setting/queue size.
     if event.is_set():
-        return
+        stop_listener()
+        time.sleep(0.05)
 
-    event.set()
+    # Recreate queue respecting current conflate setting
+    st.session_state.queue = Queue(maxsize=(1 if st.session_state.conflate else 10000))
     q: Queue = st.session_state.queue
+    event.set()
 
     def _loop(ev: threading.Event, conflate: bool, q_out: Queue):
         global _LAST_THREAD_ERROR
@@ -68,11 +73,14 @@ def start_listener(cfg):
                     try:
                         q_out.put_nowait((payload["ts_wall"], payload["price"]))
                     except Full:
-                        # Drop some backlog
+                        # Keep only the latest: drop one and insert
                         try:
-                            for _ in range(q_out.qsize() // 2):
-                                q_out.get_nowait()
+                            q_out.get_nowait()
                         except Empty:
+                            pass
+                        try:
+                            q_out.put_nowait((payload["ts_wall"], payload["price"]))
+                        except Full:
                             pass
             sub.close(0)
         except Exception as e:
@@ -159,7 +167,7 @@ def main():
         if _LAST_THREAD_ERROR:
             st.error(_LAST_THREAD_ERROR)
 
-    st.caption("Subscribe to latest tick (CONFLATE=1); printing recent ticks below.")
+    st.caption("Subscribe to ticks; choose text or chart rendering below.")
     placeholder = st.empty()
 
     # Simple autorefresh loop
@@ -178,21 +186,36 @@ def main():
 
         st.session_state.last_recv_ts = _dt.datetime.now().isoformat(timespec="seconds")
 
+    render_mode = st.radio("Render mode", ["Text", "Chart"], index=0, horizontal=True)
+
     with placeholder.container():
         data = list(st.session_state.ticks)
-        if data:
-            # Render as plain text lines (ts_wall ISO-ish, price)
-            import datetime as _dt
-
-            def _fmt(ts: float, px: float) -> str:
-                ts_str = _dt.datetime.fromtimestamp(ts).isoformat(timespec="milliseconds")
-                return f"{ts_str}  price={px:.5f}"
-
-            lines = [_fmt(ts, px) for ts, px in data[-500:]]  # show last 500 lines
-            st.text("\n".join(lines))
-            st.caption(f"Tick count: {len(data)} (showing last {min(len(data), 500)})")
-        else:
+        if not data:
             st.info("No ticks yet. Start the simulator and then Start SUB.")
+        else:
+            if render_mode == "Text":
+                # Render as plain text lines (ts_wall ISO-ish, price)
+                import datetime as _dt
+
+                def _fmt(ts: float, px: float) -> str:
+                    ts_str = _dt.datetime.fromtimestamp(ts).isoformat(timespec="milliseconds")
+                    return f"{ts_str}  price={px:.5f}"
+
+                lines = [_fmt(ts, px) for ts, px in data[-500:]]  # show last 500 lines
+                st.text("\n".join(lines))
+                st.caption(f"Tick count: {len(data)} (showing last {min(len(data), 500)})")
+            else:
+                # Convert epoch seconds to ISO strings for display on x-axis
+                import datetime as _dt
+
+                x_raw, y = zip(*data)
+                x = [
+                    _dt.datetime.fromtimestamp(ts).isoformat(timespec="milliseconds") for ts in x_raw
+                ]
+                fig = go.Figure(data=[go.Scatter(x=x, y=list(y), mode="lines", name="Price")])
+                fig.update_layout(height=500, margin=dict(l=10, r=10, t=10, b=10))
+                st.plotly_chart(fig, use_container_width=True)
+                st.caption(f"Tick count: {len(data)}")
 
     st_autorefresh = st.empty()
     st_autorefresh.caption("Auto-refresh active")
