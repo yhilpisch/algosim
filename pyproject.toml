@@ -1,0 +1,18 @@
+[project]
+name = "algosim"
+version = "0.1.0"
+description = "Real-Time Algorithmic Trading Simulator (MVP, ZMQ)"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+sim = "rt_sim.cli:main"
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+

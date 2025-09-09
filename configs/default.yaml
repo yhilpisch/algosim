@@ -1,0 +1,44 @@
+transport:
+  endpoints:
+    ticks_pub:   tcp://127.0.0.1:5555
+    orders_push: tcp://127.0.0.1:5556
+    fills_pub:   tcp://127.0.0.1:5557
+  hwm:
+    ticks_pub: 20000
+    orders:    20000
+    fills_pub: 20000
+  conflate:
+    ui_ticks_sub: true
+
+model:
+  type: vasicek
+  kappa: 0.8
+  theta: 0.0
+  sigma: 0.2
+  P0: 100.0
+  x0: 0.0
+
+schedule:
+  mode: poisson
+  dt_fixed_ms: 200
+  dt_mean_ms: 150
+  speed: 1.0
+
+execution:
+  latency_ms: 50
+  slippage_bps: 1.0
+  commission_bps: 0.5
+  commission_fixed: 0.0
+
+strategy:
+  path: strategies/sma_crossover/strategy.py
+  params: {fast: 20, slow: 50, qty: 1}
+
+run:
+  seed: 42
+  duration_s: 0
+  export_dir: runs/last
+
+ui:
+  throttle_fps: 10
+

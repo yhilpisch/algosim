@@ -1,0 +1,12 @@
+pyzmq>=25
+streamlit>=1.29
+plotly>=5.18
+pydantic>=2.6
+numpy>=1.25
+PyYAML>=6.0
+click>=8.1
+pandas>=2.0
+pytest>=7.4
+black>=24.3
+ruff>=0.4
+
