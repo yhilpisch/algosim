@@ -8,6 +8,7 @@ import click
 
 from .simulator import run as run_simulator
 from .transport import Transport
+from .broker import run as run_broker
 from .utils import load_config, new_run_id, seed_everything
 
 
@@ -19,6 +20,15 @@ def _sim_entry(cfg: dict, run_id: str) -> None:
         hwm_fills=int(cfg["transport"]["hwm"]["fills_pub"]),
     )
     run_simulator(cfg, t, run_id)
+
+
+def _broker_entry(cfg: dict, run_id: str) -> None:
+    t = Transport(
+        hwm_ticks=int(cfg["transport"]["hwm"]["ticks_pub"]),
+        hwm_orders=int(cfg["transport"]["hwm"]["orders"]),
+        hwm_fills=int(cfg["transport"]["hwm"]["fills_pub"]),
+    )
+    run_broker(cfg, t, run_id)
 
 
 @click.group(name="sim")
@@ -37,23 +47,27 @@ def cmd_run(config_path: str, headless: bool, inline: bool) -> None:
     run_id = new_run_id()
 
     if inline:
-        click.echo(f"Simulator starting inline (run_id={run_id}). Press Ctrl-C to stop.")
+        click.echo(f"Simulator+Broker starting inline (run_id={run_id}). Press Ctrl-C to stop.")
         try:
-            _sim_entry(cfg, run_id)
+            # Run both in current process: simulator on a child process, broker here
+            sp = mp.Process(target=_sim_entry, args=(cfg, run_id), daemon=True)
+            sp.start()
+            _broker_entry(cfg, run_id)
         except KeyboardInterrupt:
             click.echo("Stopping...")
     else:
-        p = mp.Process(target=_sim_entry, args=(cfg, run_id), daemon=True)
-        p.start()
-        click.echo(f"Simulator started (run_id={run_id}, pid={p.pid}). Press Ctrl-C to stop.")
+        ps = mp.Process(target=_sim_entry, args=(cfg, run_id), daemon=True)
+        pb = mp.Process(target=_broker_entry, args=(cfg, run_id), daemon=True)
+        ps.start(); pb.start()
+        click.echo(f"Simulator started (pid={ps.pid}); Broker started (pid={pb.pid}). Ctrl-C to stop.")
         try:
-            p.join()
+            ps.join(); pb.join()
         except KeyboardInterrupt:
             click.echo("Stopping...")
         finally:
-            if p.is_alive():
-                p.terminate()
-                p.join(timeout=1)
+            for proc in (ps, pb):
+                if proc.is_alive():
+                    proc.terminate(); proc.join(timeout=1)
 
 
 @cli.command("new-strategy")

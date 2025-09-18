@@ -1,6 +1,8 @@
-# Python
+# Python (ensure no bytecode or caches are tracked anywhere)
 __pycache__/
+**/__pycache__/
 *.py[cod]
+**/*.py[cod]
 *.pyo
 *.pyd
 .Python
@@ -31,3 +33,4 @@ runs/
 .streamlit/**/credentials.toml
 .streamlit/**/secrets.toml
 
+sessions/

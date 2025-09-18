@@ -23,7 +23,7 @@ def _next_dt_seconds(cfg: Dict) -> float:
     return np.random.exponential(mean_ms / 1000.0)
 
 
-def _ou_exact_step(x_t: float, kappa: float, theta: float, sigma: float, dt: float) -> float:
+def _ou_exact_step(x_t: float, kappa: float, theta: float, sigma: float, dt: float, mu: float = 0.0) -> float:
     if kappa <= 0:
         # fall back to pure diffusion (approx)
         return x_t + sigma * math.sqrt(max(dt, 0.0)) * np.random.normal()
@@ -31,7 +31,7 @@ def _ou_exact_step(x_t: float, kappa: float, theta: float, sigma: float, dt: flo
     mean = theta + (x_t - theta) * exp_term
     var = (sigma * sigma) * (1 - math.exp(-2 * kappa * dt)) / (2 * kappa)
     std = math.sqrt(max(var, 0.0))
-    return mean + std * np.random.normal()
+    return mean + std * np.random.normal() + mu * dt
 
 
 def _x_to_price(x: float, P0: float) -> float:
@@ -46,6 +46,7 @@ def run(config: Dict, transport: Transport, run_id: str | None = None) -> None:
     run_id = run_id or new_run_id()
     m = config["model"]
     kappa, theta, sigma = float(m["kappa"]), float(m["theta"]), float(m["sigma"])
+    mu = float(m.get("mu", 0.0))
     P0, x = float(m["P0"]), float(m.get("x0", 0.0))
 
     ep = config["transport"]["endpoints"]
@@ -70,7 +71,7 @@ def run(config: Dict, transport: Transport, run_id: str | None = None) -> None:
             dt = _next_dt_seconds(config)
             time.sleep(dt)
             t_sim += dt
-            x = _ou_exact_step(x, kappa, theta, sigma, dt)
+            x = _ou_exact_step(x, kappa, theta, sigma, dt, mu)
             price = _x_to_price(x, P0)
             seq += 1
             tick = Tick(

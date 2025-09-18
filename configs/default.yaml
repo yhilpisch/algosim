@@ -14,7 +14,8 @@ model:
   type: vasicek
   kappa: 0.8
   theta: 0.0
-  sigma: 0.2
+  sigma: 0.005
+  mu: 0.001
   P0: 100.0
   x0: 0.0
 
@@ -41,4 +42,3 @@ run:
 
 ui:
   throttle_fps: 10
-

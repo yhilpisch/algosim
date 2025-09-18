@@ -24,7 +24,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "type": "vasicek",
         "kappa": 0.8,
         "theta": 0.0,
-        "sigma": 0.2,
+        "sigma": 0.005,
+        "mu": 0.00002,
         "P0": 100.0,
         "x0": 0.0,
     },
@@ -39,6 +40,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "path": "strategies/sma_crossover/strategy.py",
         "params": {"fast": 20, "slow": 50, "qty": 1},
     },
+    "portfolio": {"initial_cash": 100000.0},
     "run": {"seed": 42, "duration_s": 0, "export_dir": "runs/last"},
     "ui": {"throttle_fps": 10},
 }

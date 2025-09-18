@@ -52,6 +52,18 @@ class Transport:
 
     @staticmethod
     def recv_json(sock: zmq.Socket) -> Tuple[str, dict]:
-        topic, data = sock.recv_multipart()
-        return topic.decode(), json.loads(data)
+        frames = sock.recv_multipart()
+        if len(frames) == 1:
+            # Fallback: single-frame JSON without topic
+            return "", json.loads(frames[0])
+        topic, data = frames[0], frames[1]
+        return topic.decode() if isinstance(topic, (bytes, bytearray)) else str(topic), json.loads(data)
 
+    # For PUSH/PULL (orders), send/recv single-frame JSON without topic
+    @staticmethod
+    def send_json_push(sock: zmq.Socket, payload: dict) -> None:
+        sock.send_json(payload)
+
+    @staticmethod
+    def recv_json_pull(sock: zmq.Socket) -> dict:
+        return sock.recv_json()
