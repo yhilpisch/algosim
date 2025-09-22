@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import time
 from collections import deque
@@ -9,11 +10,52 @@ import plotly.graph_objs as go
 import streamlit as st
 import zmq
 from queue import Queue, Full, Empty
+from pathlib import Path
+import os
+import json as _json
+import signal as _signal
+import subprocess
 import multiprocessing as mp
 
 # Background listener writes into a Queue object passed at thread start.
 # Keep the reference in session_state so reruns use the same queue.
 _LAST_THREAD_ERROR: str | None = None
+# Global log buffer for strategy host (avoid touching st.session_state from threads)
+STRAT_LOGS: deque[str] = deque(maxlen=2000)
+STRAT_LOG_LOCK = threading.Lock()
+PID_REG_PATH: Path = Path(__file__).resolve().parents[1] / "runs/strategy_hosts.json"
+
+
+def read_pid_registry() -> list[int]:
+    try:
+        data = _json.loads(PID_REG_PATH.read_text())
+        if isinstance(data, list):
+            return [int(x) for x in data]
+    except Exception:
+        pass
+    return []
+
+
+def write_pid_registry(pids: list[int]) -> None:
+    try:
+        PID_REG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        PID_REG_PATH.write_text(_json.dumps([int(x) for x in pids]))
+    except Exception:
+        pass
+
+
+def register_pid(pid: int) -> None:
+    pids = read_pid_registry()
+    if pid not in pids:
+        pids.append(pid)
+        write_pid_registry(pids)
+
+
+def unregister_pid(pid: int) -> None:
+    pids = read_pid_registry()
+    if pid in pids:
+        pids.remove(pid)
+        write_pid_registry(pids)
 
 try:
     from rt_sim.transport import Transport
@@ -52,6 +94,33 @@ def _proc_sim_entry(cfg: dict, run_id: str) -> None:
     run_sim(cfg, t, run_id)
 
 
+def _proc_strategy_entry(
+    cfg: dict,
+    run_id: str,
+    strategy_path: str,
+    strategy_id: str | None,
+    params_json: str | None,
+    topic: str,
+    conflate: bool,
+) -> None:
+    from rt_sim.transport import Transport
+    from rt_sim.strategy_host import run as run_host
+    import json as _json
+
+    t = Transport(
+        hwm_ticks=int(cfg["transport"]["hwm"]["ticks_pub"]),
+        hwm_orders=int(cfg["transport"]["hwm"]["orders"]),
+        hwm_fills=int(cfg["transport"]["hwm"]["fills_pub"]),
+    )
+    params = None
+    if params_json:
+        try:
+            params = _json.loads(params_json)
+        except Exception:
+            params = None
+    run_host(cfg, t, run_id, strategy_path, strategy_id=strategy_id, params_override=params, topic=topic, conflate=conflate)
+
+
 st.set_page_config(page_title="algosim — Ticks", layout="wide")
 
 
@@ -62,6 +131,14 @@ def ensure_state():
         st.session_state.fills = deque(maxlen=500)
     if "pnl" not in st.session_state:
         st.session_state.pnl = deque(maxlen=2000)  # (ts_wall, equity)
+    if "pos_series" not in st.session_state:
+        st.session_state.pos_series = deque(maxlen=2000)  # (ts_wall, pos)
+    if "initial_cash" not in st.session_state:
+        cfg0 = st.session_state.get("cfg", load_config(None))
+        try:
+            st.session_state.initial_cash = float(cfg0.get("portfolio", {}).get("initial_cash", 100000.0))
+        except Exception:
+            st.session_state.initial_cash = 100000.0
     if "listener_thread" not in st.session_state:
         st.session_state.listener_thread = None
     if "listener_event" not in st.session_state:
@@ -100,6 +177,20 @@ def ensure_state():
         st.session_state.proc_broker = None
     if "proc_sim" not in st.session_state:
         st.session_state.proc_sim = None
+    if "proc_strategy" not in st.session_state:
+        st.session_state.proc_strategy = None
+    if "strategy_path" not in st.session_state:
+        st.session_state.strategy_path = "strategies/sma_crossover/strategy.py"
+    if "strategy_code" not in st.session_state:
+        try:
+            st.session_state.strategy_code = Path(st.session_state.strategy_path).read_text()
+        except Exception:
+            st.session_state.strategy_code = ""
+    if "strategy_log_thread" not in st.session_state:
+        st.session_state.strategy_log_thread = None
+    if "strategy_log_event" not in st.session_state:
+        st.session_state.strategy_log_event = threading.Event()
+    # PID registry helpers are provided at module scope
 
 
 def start_listener(cfg):
@@ -333,6 +424,12 @@ def main():
         st.slider("Refresh rate (Hz)", 1, 20, key="refresh_hz")
         st.button("Refresh now", on_click=lambda: None)
 
+        # Metrics controls
+        st.divider()
+        st.subheader("Metrics Settings")
+        default_ann = int(3600 * 24 * 252)
+        st.number_input("Sharpe annualization factor", min_value=1, value=st.session_state.get("ann_factor", default_ann), key="ann_factor", help="Scale per-step Sharpe to annualized (e.g., trading-seconds-per-year)")
+
         # Status block
         st.divider()
         st.subheader("Status")
@@ -398,13 +495,26 @@ def main():
         if st.button("Load config"):
             try:
                 st.session_state.cfg = load_config(str(resolved))
-                st.success(f"Loaded config: {resolved}")
+                st.session_state.cfg_path = str(resolved)
+                # Reset portfolio state on config load
+                try:
+                    init_cash = float(st.session_state.cfg.get("portfolio", {}).get("initial_cash", 100000.0))
+                except Exception:
+                    init_cash = 100000.0
+                st.session_state.initial_cash = init_cash
+                st.session_state.pos = 0.0
+                st.session_state.cash = init_cash
+                st.session_state.last_price = None
+                st.session_state.pnl = deque(maxlen=2000)
+                st.session_state.fills = deque(maxlen=500)
+                st.session_state.pos_series = deque(maxlen=2000)
+                st.success(f"Loaded config: {resolved} (initial cash set to ${init_cash:,.2f})")
             except Exception as e:
                 st.error(f"Failed to load config: {e}")
         st.caption(f"Using config: {resolved}")
         st.code(json.dumps(cfg["transport"], indent=2))
 
-    tabs = st.tabs(["Ticks", "Fills / Orders", "P&L"]) 
+    tabs = st.tabs(["Ticks", "Fills / Orders", "P&L", "Strategy"]) 
     with tabs[0]:
         # Render mode selector on top, default to Chart
         render_mode = st.radio("Render mode", ["Chart", "Text"], index=0, horizontal=True)
@@ -440,7 +550,9 @@ def main():
         # Update equity on tick if we have price
         if st.session_state.last_price is not None:
             eq = st.session_state.cash + st.session_state.pos * float(st.session_state.last_price)
-            st.session_state.pnl.append((time.time(), eq))
+            ts_now = time.time()
+            st.session_state.pnl.append((ts_now, eq))
+            st.session_state.pos_series.append((ts_now, st.session_state.pos))
 
     # Drain fills queue
     fdrained = 0
@@ -463,6 +575,7 @@ def main():
             last_px = st.session_state.last_price if st.session_state.last_price is not None else price
             eq = st.session_state.cash + st.session_state.pos * float(last_px)
             st.session_state.pnl.append((tsf, eq))
+            st.session_state.pos_series.append((tsf, st.session_state.pos))
             fdrained += 1
     except Empty:
         pass
@@ -550,21 +663,215 @@ def main():
         pos = st.session_state.pos
         cash = st.session_state.cash
         last_px = st.session_state.last_price
-        eq = cash + (pos * float(last_px) if last_px is not None else 0.0)
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Position (qty)", f"{pos:,.2f}")
-        c2.metric("Cash", f"${cash:,.2f}")
-        c3.metric("Equity", f"${eq:,.2f}")
+        pos_value = (pos * float(last_px)) if last_px is not None else 0.0
+        eq = cash + pos_value
         # Chart equity over time
         if st.session_state.pnl:
             import datetime as _dt
+            from rt_sim.metrics import (
+                compute_drawdown,
+                compute_sharpe_from_equity,
+                compute_time_weighted_exposure,
+                compute_trade_stats,
+                compute_time_weighted_dollar_exposure,
+            )
             t_raw, eq_vals = zip(*list(st.session_state.pnl))
+            # Defer plotting until after KPIs so metrics appear above the chart
+
+            # Compute rolling metrics on the visible equity curve
+            dd, _, _ = compute_drawdown(list(eq_vals))
+            # Approx annualization: assume 1 Hz samples => 31,536,000 seconds/year
+            # Scale per-step Sharpe with factor chosen conservatively (3600*24*252 ~ trading seconds)
+            ann = float(st.session_state.get("ann_factor", 3600.0 * 24.0 * 252.0))
+            sharpe = compute_sharpe_from_equity(list(eq_vals), annualization_factor=ann)
+            # Exposure based on time-weighted pos_series
+            if st.session_state.pos_series:
+                pt, pv = zip(*list(st.session_state.pos_series))
+                exposure = compute_time_weighted_exposure(list(pt), list(pv))
+            else:
+                exposure = 0.0
+            # Trade stats from fills
+            fills_payloads = [f for _, f in list(st.session_state.fills)]
+            tstats = compute_trade_stats(fills_payloads)
+            win_rate = tstats.get("win_rate", 0.0)
+            avg_pl = tstats.get("avg_trade_pl", 0.0)
+            avg_hold = tstats.get("avg_hold_s", 0.0)
+
+            m1, m2, m3 = st.columns(3)
+            # Compact metrics layout: rows of up to 5 metrics
+            metric_items = [
+                ("Position (qty)", f"{pos:,.2f}"),
+                ("Position Value", f"${pos_value:,.2f}"),
+                ("Cash", f"${cash:,.2f}"),
+                ("Equity", f"${eq:,.2f}"),
+                ("Max Drawdown", f"{dd*100:,.2f}%"),
+                ("Sharpe (approx)", f"{sharpe:,.2f}"),
+                ("Exposure", f"{exposure*100:,.1f}%"),
+                ("Win Rate", f"{win_rate*100:,.1f}%"),
+                ("Avg Trade P/L", f"${avg_pl:,.2f}"),
+                ("Avg Hold (s)", f"{avg_hold:,.1f}"),
+            ]
+            # Dollar exposure (avg as % of initial cash)
+            rel_dexp = None
+            if st.session_state.ticks and st.session_state.pos_series:
+                tt, tp = zip(*list(st.session_state.ticks))
+                pt, pv = zip(*list(st.session_state.pos_series))
+                try:
+                    rel_dexp = compute_time_weighted_dollar_exposure(
+                        list(tt), list(tp), list(zip(pt, pv)), float(st.session_state.initial_cash)
+                    )
+                except Exception:
+                    rel_dexp = 0.0
+            if rel_dexp is not None:
+                metric_items.append(("Dollar Exposure (avg)", f"{rel_dexp*100:,.1f}%"))
+
+            per_row = 5
+            for i in range(0, len(metric_items), per_row):
+                cols = st.columns(per_row)
+                for col, (label, value) in zip(cols, metric_items[i : i + per_row]):
+                    col.metric(label, value)
+
+            # Now render equity chart below the KPIs
             x = [_dt.datetime.fromtimestamp(ts).isoformat(timespec="seconds") for ts in t_raw]
             figp = go.Figure(data=[go.Scatter(x=x, y=list(eq_vals), mode="lines", name="Equity")])
             figp.update_layout(height=400, margin=dict(l=10, r=10, t=10, b=10))
             st.plotly_chart(figp, use_container_width=True)
         else:
             st.caption("No P&L data yet. Send an order to create fills or wait for ticks.")
+
+    with tabs[3]:
+        st.subheader("Strategy Host")
+        spath_in = st.text_input("Strategy path", value=st.session_state.strategy_path)
+        base_dir = Path(__file__).resolve().parents[1]
+        spath = Path(spath_in)
+        if not spath.is_absolute():
+            spath = base_dir / spath
+        st.session_state.strategy_path = str(spath)
+        colsS = st.columns(2)
+        if colsS[0].button("Load file"):
+            try:
+                st.session_state.strategy_code = Path(st.session_state.strategy_path).read_text()
+                st.success("Loaded strategy file.")
+            except Exception as e:
+                st.error(f"Failed to load: {e}")
+        if colsS[1].button("Save file"):
+            try:
+                Path(st.session_state.strategy_path).write_text(st.session_state.strategy_code)
+                st.success("Saved strategy file.")
+            except Exception as e:
+                st.error(f"Failed to save: {e}")
+
+        st.text_area("strategy.py", height=260, key="strategy_code")
+        st.divider()
+        st.subheader("Run Controls")
+        sid = st.text_input("Strategy ID", value="sma1")
+        topic_str = st.text_input("Tick topic (empty=all)", value="X")
+        conflate = st.checkbox("Conflate latest only (ticks)", value=False, key="strategy_conflate")
+        params_json = st.text_area("PARAMS override (JSON)", value="", placeholder='{"fast": 20, "slow": 50, "qty": 1, "threshold_bps": 15, "min_interval_s": 10}')
+        sbtn = st.columns(2)
+        if sbtn[0].button("Start strategy host"):
+            try:
+                # if already running
+                proc = st.session_state.proc_strategy
+                if proc and getattr(proc, "poll", lambda: None)() is None:
+                    st.warning("Strategy host already running")
+                else:
+                    # Build subprocess command to capture stdout
+                    cfg_path = st.session_state.get("cfg_path", "configs/default.yaml")
+                    # Resolve cfg path relative to project root if needed
+                    cfg_p = Path(cfg_path)
+                    if not cfg_p.is_absolute():
+                        cfg_p = base_dir / cfg_p
+                    conflate_flag = "--conflate" if conflate else "--no-conflate"
+                    cmd = [
+                        sys.executable,
+                        "-u",
+                        "-m",
+                        "rt_sim.cli",
+                        "run-strategy",
+                        "--config",
+                        str(cfg_p),
+                        "--path",
+                        st.session_state.strategy_path,
+                        "--id",
+                        sid,
+                        "--topic",
+                        topic_str,
+                        conflate_flag,
+                    ]
+                    if params_json.strip():
+                        cmd += ["--params", params_json]
+                    env = dict(os.environ)
+                    env["PYTHONUNBUFFERED"] = "1"
+                    # set log file for host to write into
+                    log_path = Path(base_dir / f"runs/strategy_host_{int(time.time())}.log")
+                    env["STRAT_LOG_FILE"] = str(log_path)
+                    p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True, bufsize=1, env=env)
+                    st.session_state.strategy_log_path = str(log_path)
+                    st.session_state.proc_strategy = p
+                    register_pid(p.pid)
+                    st.success(f"Strategy host started (pid={p.pid})")
+            except Exception as e:
+                st.error(f"Failed to start strategy host: {e}")
+        if sbtn[1].button("Stop strategy host"):
+            p = st.session_state.proc_strategy
+            if p and getattr(p, "poll", lambda: 1)() is None:
+                try:
+                    st.session_state.strategy_log_event.clear()
+                    p.terminate()
+                    try:
+                        p.wait(timeout=1)
+                    except Exception:
+                        p.kill()
+                    unregister_pid(p.pid)
+                    st.success("Strategy host stopped")
+                except Exception as e:
+                    st.error(f"Failed to stop strategy host: {e}")
+            else:
+                st.info("Strategy host not running")
+        alive = bool(st.session_state.proc_strategy and getattr(st.session_state.proc_strategy, "poll", lambda: 1)() is None)
+        st.caption(f"Strategy host alive: {alive}")
+
+        st.subheader("Live Logs")
+        log_path = Path(st.session_state.get("strategy_log_path", ""))
+        if log_path.exists():
+            try:
+                content = log_path.read_text()
+                lines = content.strip().splitlines()
+            except Exception:
+                lines = []
+        else:
+            lines = []
+        if lines:
+            st.text("\n".join(lines[-200:]))
+        else:
+            st.caption("No logs yet.")
+
+        st.divider()
+        st.subheader("Manage Strategy Hosts")
+        pid_list = read_pid_registry()
+        st.caption(f"Tracked strategy host PIDs: {pid_list if pid_list else '[]'}")
+        if st.button("Stop ALL strategy hosts"):
+            stopped = []
+            still = []
+            for pid in pid_list:
+                try:
+                    os.kill(pid, _signal.SIGTERM)
+                    stopped.append(pid)
+                except Exception:
+                    still.append(pid)
+            # Quick cleanup of registry
+            # Rebuild registry based on processes that are still alive
+            remaining = []
+            for pid in pid_list:
+                try:
+                    os.kill(pid, 0)
+                except Exception:
+                    continue
+                else:
+                    remaining.append(pid)
+            write_pid_registry(remaining)
+            st.success(f"Sent SIGTERM to: {stopped}. Remaining tracked: {remaining}")
 
     if st.session_state.get("auto_refresh", True):
         st_autorefresh = st.empty()
