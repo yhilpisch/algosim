@@ -190,6 +190,30 @@ def ensure_state():
         st.session_state.strategy_log_thread = None
     if "strategy_log_event" not in st.session_state:
         st.session_state.strategy_log_event = threading.Event()
+    if "tick_chart" not in st.session_state:
+        base_fig = go.Figure(
+            data=[
+                go.Scattergl(name="Price", mode="lines", x=[], y=[], line=dict(color="#3498db", width=2)),
+                go.Scattergl(
+                    name="Buys",
+                    mode="markers",
+                    x=[],
+                    y=[],
+                    marker=dict(symbol="triangle-up", color="#2ecc71", size=12, line=dict(color="white", width=1)),
+                    hoverinfo="text",
+                ),
+                go.Scattergl(
+                    name="Sells",
+                    mode="markers",
+                    x=[],
+                    y=[],
+                    marker=dict(symbol="triangle-down", color="#e74c3c", size=12, line=dict(color="white", width=1)),
+                    hoverinfo="text",
+                ),
+            ],
+            layout=go.Layout(uirevision="price_stream", height=500, margin=dict(l=10, r=10, t=10, b=10)),
+        )
+        st.session_state.tick_chart = {"fig": base_fig, "datarevision": 0}
     # PID registry helpers are provided at module scope
 
 
@@ -400,62 +424,45 @@ def main():
                     # Convert epoch seconds to ISO strings for display on x-axis
                     import datetime as _dt
 
-                    x_raw, y = zip(*data)
-                    x = [
-                        _dt.datetime.fromtimestamp(ts).isoformat(timespec="milliseconds") for ts in x_raw
-                    ]
-                    fig = go.Figure(data=[go.Scatter(x=x, y=list(y), mode="lines", name="Price")])
+                    x_raw, y_vals = zip(*data)
+                    x = [_dt.datetime.fromtimestamp(ts) for ts in x_raw]
+                    chart_state = st.session_state.tick_chart
+                    fig = chart_state["fig"]
+                    fig.data[0].x = list(x)
+                    fig.data[0].y = list(y_vals)
 
-                    if st.session_state.fills:
-                        buy_x, buy_y, buy_text = [], [], []
-                        sell_x, sell_y, sell_text = [], [], []
-                        for ts_fill, fill_payload in list(st.session_state.fills):
+                    buys = [pt for pt in st.session_state.fills if str(pt[1].get("side", "")).upper() == "BUY"]
+                    sells = [pt for pt in st.session_state.fills if str(pt[1].get("side", "")).upper() == "SELL"]
+
+                    def _prep_points(points):
+                        xs, ys, texts = [], [], []
+                        for ts_fill, fill_payload in points:
                             px_fill = fill_payload.get("fill_price")
                             if px_fill is None:
                                 continue
-                            ts_iso = _dt.datetime.fromtimestamp(ts_fill).isoformat(timespec="milliseconds")
+                            xs.append(_dt.datetime.fromtimestamp(ts_fill))
+                            ys.append(px_fill)
                             qty_fill = float(fill_payload.get("qty", 0.0))
                             pos_after = float(fill_payload.get("pos_after", st.session_state.pos))
-                            side_fill = str(fill_payload.get("side", "")).upper()
-                            hover = (
-                                f"{side_fill} {qty_fill:g} @ {float(px_fill):.5f}<br>"
-                                f"Position: {pos_after:,.2f}"
+                            side_txt = str(fill_payload.get("side", "")).upper()
+                            texts.append(
+                                f"{side_txt} {qty_fill:g} @ {float(px_fill):.5f}<br>Position: {pos_after:,.2f}"
                             )
-                            if side_fill == "BUY":
-                                buy_x.append(ts_iso)
-                                buy_y.append(px_fill)
-                                buy_text.append(hover)
-                            elif side_fill == "SELL":
-                                sell_x.append(ts_iso)
-                                sell_y.append(px_fill)
-                                sell_text.append(hover)
+                        return xs, ys, texts
 
-                        if buy_x:
-                            fig.add_trace(
-                                go.Scatter(
-                                    x=buy_x,
-                                    y=buy_y,
-                                    mode="markers",
-                                    name="Buys",
-                                    marker=dict(symbol="triangle-up", color="#2ecc71", size=12, line=dict(width=1, color="white")),
-                                    hovertext=buy_text,
-                                    hoverinfo="text",
-                                )
-                            )
-                        if sell_x:
-                            fig.add_trace(
-                                go.Scatter(
-                                    x=sell_x,
-                                    y=sell_y,
-                                    mode="markers",
-                                    name="Sells",
-                                    marker=dict(symbol="triangle-down", color="#e74c3c", size=12, line=dict(width=1, color="white")),
-                                    hovertext=sell_text,
-                                    hoverinfo="text",
-                                )
-                            )
-                    fig.update_layout(height=500, margin=dict(l=10, r=10, t=10, b=10))
-                    st.plotly_chart(fig, use_container_width=True)
+                    buy_x, buy_y, buy_text = _prep_points(buys)
+                    sell_x, sell_y, sell_text = _prep_points(sells)
+                    fig.data[1].x = list(buy_x)
+                    fig.data[1].y = list(buy_y)
+                    fig.data[1].hovertext = list(buy_text)
+                    fig.data[2].x = list(sell_x)
+                    fig.data[2].y = list(sell_y)
+                    fig.data[2].hovertext = list(sell_text)
+
+                    chart_state["datarevision"] += 1
+                    fig.layout.datarevision = chart_state["datarevision"]
+
+                    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": True})
                     st.caption(f"Tick count: {len(data)}")
 
     with tab_fills:
