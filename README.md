@@ -13,15 +13,13 @@ Author: Dr. Yves J. Hilpisch — The Python Quants GmbH
 - Transport: ZMQ PUB/SUB for ticks and fills; PUSH/PULL for orders (JSON)
 - Streamlit App:
   - Tabs
-    - Ticks: Chart with ISO timestamps or plain Text; message rate; seq gaps
-    - Fills / Orders: manual BUY/SELL on orders_push; live fills list
-    - P&L: compact grid of KPIs (Position qty/value, Cash, Equity, MaxDD, Sharpe, Exposure, Win Rate, Avg Trade P/L, Avg Hold, Dollar Exposure) + equity chart
-    - Strategy: inline code editor for `strategy.py`, Start/Stop strategy host, PARAMS override (JSON), tick topic, conflation toggle, and live logs
-  - Status: endpoint info, ticks/sec, seq gaps, listener health; counts for received ticks/fills
-  - Test buttons: “Test receive (ticks)” and “Test fills” (1‑second checks)
-  - Refresh controls: auto‑refresh toggle + rate; manual refresh
-  - Local Processes: start/stop local simulator and broker from UI
-  - Strategy Hosts management: track PIDs and “Stop ALL strategy hosts” (cleans up after hard reloads)
+    - Ticks: real-time Plotly chart with persistent streaming updates, trade overlays (green up-triangles for buys, red down-triangles for sells), optional text mode, and live tick stats
+    - Fills / Orders: manual BUY/SELL on orders_push, scrollable fill history, contextual warnings
+    - P&L: dense 6-per-row KPI grid (Position, Value, Cash, Equity, MaxDD, Sharpe, Exposure, Win Rate, Avg Trade P/L, Avg Hold, Dollar Exposure) + equity chart
+    - Strategy: inline code editor for `strategy.py`, Start/Stop strategy host, PARAMS override (JSON), tick topic, conflation toggle, auto-flatten option on stop, and timestamped live logs in a scrollable pane
+    - Admin: listener controls, diagnostics (3s receive/fill probes), status dashboard, local process management, metrics settings, config loader, strategy host registry tools
+  - Start/Stop SUB quick controls remain in the sidebar for convenience
+  - Status/diagnostics distinguish between listener-derived metrics and test probes
 - Strategy Runner: SMA crossover (`strategies/sma_crossover/run_sma.py`) with hysteresis and min-interval
 - Config: YAML (`configs/default.yaml`) incl. `portfolio.initial_cash` (default 100,000)
 
@@ -65,7 +63,7 @@ Use the Strategy tab to edit and run a strategy with the built‑in host:
 - Strategy ID: topic used for fills (e.g., `sma1`)
 - Tick topic: `X` (default asset) or empty to subscribe to all
 - Start strategy host: launches a subprocess and shows Live Logs (written to `runs/strategy_host_*.log`)
-- Stop strategy host: terminates the subprocess
+- Stop strategy host: terminates the subprocess (optionally auto-flattens the position first)
 - Stop ALL strategy hosts: sends SIGTERM to all tracked strategy host PIDs (`runs/strategy_hosts.json`)
 
 The example strategy template implements price‑vs‑SMA crossover with a no‑trade band (threshold_bps) and a cooldown (min_interval_s) to limit churn.
@@ -90,7 +88,7 @@ Useful options:
 - `--topic X` subscribe to a specific tick topic (default subscribes to all)
 - `--no-conflate` process all ticks (default behavior already avoids conflation)
 
-The app will display resulting fills and live P&L.
+The app will display resulting fills and live P&L. Trades also appear on the live tick chart.
 
 ## Configuration Notes
 
@@ -100,7 +98,7 @@ The app will display resulting fills and live P&L.
 
 ## Troubleshooting
 
-- No fills: start broker and simulator first; verify “Fills listener alive: True” and try “Test fills (1s)”.
+- No fills: start broker and simulator first; verify “Fills listener alive: True” and try “Test fills (3s)”.
 - Orders deferred: broker prints “defer fill: no price yet” until it receives the first tick.
 - Strategy runner sees 0 ticks: subscribe to all topics (`--topic ""`), avoid conflation, and wait for the runner’s “first tick …” message.
  - Strategy host via UI shows no logs: use the Strategy tab’s “Stop ALL strategy hosts”, start local simulator/broker, then Start strategy host again; logs are tailed from `runs/strategy_host_*.log`.
