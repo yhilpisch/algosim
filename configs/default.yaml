@@ -12,11 +12,11 @@ transport:
 
 model:
   type: vasicek
-  kappa: 0.8
-  theta: 0.01
-  sigma: 0.05
-  mu: 0.01
-  P0: 100.0
+  kappa: 0.025
+  theta: 0.0
+  sigma: 0.0025
+  mu: 0.001
+  P0: 100.
   x0: 0.0
 
 schedule:

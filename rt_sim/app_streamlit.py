@@ -299,223 +299,22 @@ def main():
     ensure_state()
     st.title("algosim — Real-Time Ticks (MVP)")
 
+    cfg = st.session_state.get("cfg", load_config(None))
+
     with st.sidebar:
         st.header("Connection")
-        # Active config (loaded earlier or defaults)
-        cfg = st.session_state.get("cfg", load_config(None))
-        st.checkbox("Conflate latest only", key="conflate")
         cols = st.columns(2)
         if cols[0].button("Start SUB"):
             start_listener(cfg)
         if cols[1].button("Stop SUB"):
             stop_listener()
-        # Test receive placed below the control row
-        if st.button("Test receive (1s)"):
-            try:
-                # One-shot SUB test, no conflation, 1s window
-                t = Transport(hwm_ticks=int(cfg["transport"]["hwm"]["ticks_pub"]))
-                sub = t.connect_sub(cfg["transport"]["endpoints"]["ticks_pub"], topic="X", conflate=False)
-                poller = zmq.Poller()
-                poller.register(sub, zmq.POLLIN)
-                import time as _time
+        st.caption("Use the Admin tab for diagnostics and advanced controls.")
 
-                start = _time.time()
-                cnt = 0
-                last = None
-                while _time.time() - start < 1.2:
-                    socks = dict(poller.poll(timeout=100))
-                    if sub in socks and socks[sub] == zmq.POLLIN:
-                        _, payload = t.recv_json(sub)
-                        cnt += 1
-                        last = payload
-                sub.close(0)
-                # Persist results for display across reruns
-                st.session_state.test_recv_stats = {
-                    "count": cnt,
-                    "last_price": (last or {}).get("price"),
-                    "last_seq": (last or {}).get("seq"),
-                    "window_s": 1.2,
-                    "ts": _time.strftime("%Y-%m-%d %H:%M:%S"),
-                }
-                if cnt > 0:
-                    st.success(
-                        f"Test receive: {cnt} messages in ~1s. Last price={st.session_state.test_recv_stats['last_price']:.5f} seq={st.session_state.test_recv_stats['last_seq']}"
-                    )
-                else:
-                    st.warning("Test receive: 0 messages in ~1s. Check simulator and endpoint/topic.")
-            except Exception as e:
-                st.error(f"Test receive failed: {e}")
-        if st.button("Test fills (1s)"):
-            try:
-                # One-shot SUB test for fills, subscribe to all topics
-                t = Transport(hwm_ticks=int(cfg["transport"]["hwm"]["fills_pub"]))
-                sub = t.connect_sub(cfg["transport"]["endpoints"]["fills_pub"], topic="", conflate=False)
-                poller = zmq.Poller(); poller.register(sub, zmq.POLLIN)
-                import time as _time
-                start = _time.time(); cnt = 0; last = None
-                while _time.time() - start < 1.2:
-                    socks = dict(poller.poll(timeout=100))
-                    if sub in socks and socks[sub] == zmq.POLLIN:
-                        topic, payload = t.recv_json(sub)
-                        cnt += 1; last = payload
-                sub.close(0)
-                st.session_state.test_fills_stats = {
-                    "count": cnt,
-                    "last_price": (last or {}).get("fill_price"),
-                    "last_qty": (last or {}).get("qty"),
-                    "last_side": (last or {}).get("side"),
-                    "window_s": 1.2,
-                    "ts": _time.strftime("%Y-%m-%d %H:%M:%S"),
-                }
-                if cnt > 0:
-                    st.success(
-                        f"Test fills: {cnt} messages in ~1s. Last {st.session_state.test_fills_stats['last_side']} {st.session_state.test_fills_stats['last_qty']} @ {st.session_state.test_fills_stats['last_price']:.5f}"
-                    )
-                else:
-                    st.warning("Test fills: 0 messages in ~1s. Check broker and fills endpoint.")
-            except Exception as e:
-                st.error(f"Test fills failed: {e}")
-        # Local demo controls
-        st.divider()
-        st.subheader("Local Processes")
-        lc = st.columns(2)
-        if lc[0].button("Start local broker"):
-            try:
-                if st.session_state.proc_broker and st.session_state.proc_broker.is_alive():
-                    st.warning("Broker already running")
-                else:
-                    run_id = new_run_id()
-                    p = mp.Process(target=_proc_broker_entry, args=(cfg, run_id), daemon=True)
-                    p.start(); st.session_state.proc_broker = p
-                    st.success(f"Broker started (pid={p.pid})")
-            except Exception as e:
-                st.error(f"Failed to start broker: {e}")
-        if lc[1].button("Stop local broker"):
-            p = st.session_state.proc_broker
-            if p and p.is_alive():
-                p.terminate(); p.join(timeout=1)
-                st.success("Broker stopped")
-            else:
-                st.info("Broker not running")
-        lc2 = st.columns(2)
-        if lc2[0].button("Start local simulator"):
-            try:
-                if st.session_state.proc_sim and st.session_state.proc_sim.is_alive():
-                    st.warning("Simulator already running")
-                else:
-                    run_id = new_run_id()
-                    p = mp.Process(target=_proc_sim_entry, args=(cfg, run_id), daemon=True)
-                    p.start(); st.session_state.proc_sim = p
-                    st.success(f"Simulator started (pid={p.pid})")
-            except Exception as e:
-                st.error(f"Failed to start simulator: {e}")
-        if lc2[1].button("Stop local simulator"):
-            p = st.session_state.proc_sim
-            if p and p.is_alive():
-                p.terminate(); p.join(timeout=1)
-                st.success("Simulator stopped")
-            else:
-                st.info("Simulator not running")
+    tab_ticks, tab_fills, tab_pnl, tab_strategy, tab_admin = st.tabs(
+        ["Ticks", "Fills / Orders", "P&L", "Strategy", "Admin"]
+    )
 
-        # Refresh controls
-        st.divider()
-        st.subheader("Refresh")
-        st.checkbox("Auto-refresh", key="auto_refresh")
-        st.slider("Refresh rate (Hz)", 1, 20, key="refresh_hz")
-        st.button("Refresh now", on_click=lambda: None)
-
-        # Metrics controls
-        st.divider()
-        st.subheader("Metrics Settings")
-        default_ann = int(3600 * 24 * 252)
-        st.number_input("Sharpe annualization factor", min_value=1, value=st.session_state.get("ann_factor", default_ann), key="ann_factor", help="Scale per-step Sharpe to annualized (e.g., trading-seconds-per-year)")
-
-        # Status block
-        st.divider()
-        st.subheader("Status")
-        ep = cfg["transport"]["endpoints"]["ticks_pub"]
-        ep_f = cfg["transport"]["endpoints"]["fills_pub"]
-        st.write(f"Ticks: `{ep}` | Topic: `X` | Conflate: {st.session_state.conflate}")
-        st.write(f"Fills: `{ep_f}` (subscribe all topics)")
-        st.write(f"Queue size: {st.session_state.queue.qsize()}")
-        th = st.session_state.listener_thread
-        st.write(f"Listener alive: {bool(th and th.is_alive())}")
-        fth = st.session_state.fills_thread
-        st.write(f"Fills listener alive: {bool(fth and fth.is_alive())}")
-        last = st.session_state.get("last_recv_ts", None)
-        if last:
-            st.write(f"Last received at: {last}")
-        else:
-            st.write("Last received: none yet")
-        if _LAST_THREAD_ERROR:
-            st.error(_LAST_THREAD_ERROR)
-        # Metrics: ticks/sec and sequenced gaps
-        atimes = st.session_state.get("arrival_times", deque())
-        rate = 0.0
-        if atimes:
-            cutoff = time.time() - 5.0
-            recent = [t for t in atimes if t >= cutoff]
-            if len(recent) >= 2:
-                dur = max(1e-6, (recent[-1] - recent[0]))
-                rate = len(recent) / dur
-        st.write(f"Ticks/sec (approx): {rate:.1f}")
-        st.write(f"Seq gaps detected: {st.session_state.get('gap_count', 0)}")
-        # Persistent Test Receive results
-        tr = st.session_state.get("test_recv_stats")
-        if tr:
-            st.info(
-                f"Last Test receive @ {tr['ts']}: count={tr['count']} | last_price={tr['last_price']:.5f} | last_seq={tr['last_seq']} | window~{tr['window_s']}s"
-            )
-        # Persistent Test Fills results
-        trf = st.session_state.get("test_fills_stats")
-        if trf:
-            if trf.get("count", 0) > 0 and trf.get("last_price") is not None:
-                price_str = f"{float(trf['last_price']):.5f}"
-            elif trf.get("count", 0) > 0:
-                price_str = "n/a"
-            else:
-                price_str = "n/a"
-            cnt = trf.get("count", 0)
-            side = trf.get("last_side", "-")
-            qty = trf.get("last_qty", "-")
-            st.info(
-                f"Last Test fills @ {trf['ts']}: count={cnt} | last {side} {qty} @ {price_str} | window~{trf['window_s']}s"
-            )
-        # Fills stats
-        st.write(f"Fills received: {len(st.session_state.fills)}")
-
-        # Config box at the end
-        st.divider()
-        st.subheader("Config")
-        cfg_path = st.text_input("Config path", value="configs/default.yaml")
-        base_dir = __import__("pathlib").Path(__file__).resolve().parents[1]
-        resolved = __import__("pathlib").Path(cfg_path)
-        if not resolved.is_absolute():
-            resolved = base_dir / resolved
-        if st.button("Load config"):
-            try:
-                st.session_state.cfg = load_config(str(resolved))
-                st.session_state.cfg_path = str(resolved)
-                # Reset portfolio state on config load
-                try:
-                    init_cash = float(st.session_state.cfg.get("portfolio", {}).get("initial_cash", 100000.0))
-                except Exception:
-                    init_cash = 100000.0
-                st.session_state.initial_cash = init_cash
-                st.session_state.pos = 0.0
-                st.session_state.cash = init_cash
-                st.session_state.last_price = None
-                st.session_state.pnl = deque(maxlen=2000)
-                st.session_state.fills = deque(maxlen=500)
-                st.session_state.pos_series = deque(maxlen=2000)
-                st.success(f"Loaded config: {resolved} (initial cash set to ${init_cash:,.2f})")
-            except Exception as e:
-                st.error(f"Failed to load config: {e}")
-        st.caption(f"Using config: {resolved}")
-        st.code(json.dumps(cfg["transport"], indent=2))
-
-    tabs = st.tabs(["Ticks", "Fills / Orders", "P&L", "Strategy"]) 
-    with tabs[0]:
+    with tab_ticks:
         # Render mode selector on top, default to Chart
         render_mode = st.radio("Render mode", ["Chart", "Text"], index=0, horizontal=True)
         st.caption("Subscribe to ticks; choose text or chart rendering below.")
@@ -571,6 +370,7 @@ def main():
             elif side == "SELL":
                 st.session_state.pos -= qty
                 st.session_state.cash += price * qty - commission
+            payload["pos_after"] = st.session_state.pos
             # Equity snapshot at fill
             last_px = st.session_state.last_price if st.session_state.last_price is not None else price
             eq = st.session_state.cash + st.session_state.pos * float(last_px)
@@ -605,11 +405,60 @@ def main():
                         _dt.datetime.fromtimestamp(ts).isoformat(timespec="milliseconds") for ts in x_raw
                     ]
                     fig = go.Figure(data=[go.Scatter(x=x, y=list(y), mode="lines", name="Price")])
+
+                    if st.session_state.fills:
+                        buy_x, buy_y, buy_text = [], [], []
+                        sell_x, sell_y, sell_text = [], [], []
+                        for ts_fill, fill_payload in list(st.session_state.fills):
+                            px_fill = fill_payload.get("fill_price")
+                            if px_fill is None:
+                                continue
+                            ts_iso = _dt.datetime.fromtimestamp(ts_fill).isoformat(timespec="milliseconds")
+                            qty_fill = float(fill_payload.get("qty", 0.0))
+                            pos_after = float(fill_payload.get("pos_after", st.session_state.pos))
+                            side_fill = str(fill_payload.get("side", "")).upper()
+                            hover = (
+                                f"{side_fill} {qty_fill:g} @ {float(px_fill):.5f}<br>"
+                                f"Position: {pos_after:,.2f}"
+                            )
+                            if side_fill == "BUY":
+                                buy_x.append(ts_iso)
+                                buy_y.append(px_fill)
+                                buy_text.append(hover)
+                            elif side_fill == "SELL":
+                                sell_x.append(ts_iso)
+                                sell_y.append(px_fill)
+                                sell_text.append(hover)
+
+                        if buy_x:
+                            fig.add_trace(
+                                go.Scatter(
+                                    x=buy_x,
+                                    y=buy_y,
+                                    mode="markers",
+                                    name="Buys",
+                                    marker=dict(symbol="triangle-up", color="#2ecc71", size=12, line=dict(width=1, color="white")),
+                                    hovertext=buy_text,
+                                    hoverinfo="text",
+                                )
+                            )
+                        if sell_x:
+                            fig.add_trace(
+                                go.Scatter(
+                                    x=sell_x,
+                                    y=sell_y,
+                                    mode="markers",
+                                    name="Sells",
+                                    marker=dict(symbol="triangle-down", color="#e74c3c", size=12, line=dict(width=1, color="white")),
+                                    hovertext=sell_text,
+                                    hoverinfo="text",
+                                )
+                            )
                     fig.update_layout(height=500, margin=dict(l=10, r=10, t=10, b=10))
                     st.plotly_chart(fig, use_container_width=True)
                     st.caption(f"Tick count: {len(data)}")
 
-    with tabs[1]:
+    with tab_fills:
         # Manual orders on top
         st.subheader("Manual Orders")
         col1, col2, col3 = st.columns([1,1,2])
@@ -654,11 +503,18 @@ def main():
                 pos += qty if side == "BUY" else -qty
                 ts_str = __import__("datetime").datetime.fromtimestamp(f.get("ts_wall", time.time())).isoformat(timespec="seconds")
                 lines.append(f"{ts_str}  {side} {qty:g} @ {float(f.get('fill_price', 0.0)):.5f}  pos≈{pos:,.2f}")
-            st.text("\n".join(lines))
+            st.text_area(
+                "Recent fills",
+                value="\n".join(reversed(lines)),
+                height=220,
+                key="fills_latest_view",
+                help="Latest fills with running position.",
+                disabled=True,
+            )
         else:
             st.caption("No fills yet.")
 
-    with tabs[2]:
+    with tab_pnl:
         st.subheader("Live Position & P&L")
         pos = st.session_state.pos
         cash = st.session_state.cash
@@ -697,8 +553,6 @@ def main():
             avg_pl = tstats.get("avg_trade_pl", 0.0)
             avg_hold = tstats.get("avg_hold_s", 0.0)
 
-            m1, m2, m3 = st.columns(3)
-            # Compact metrics layout: rows of up to 5 metrics
             metric_items = [
                 ("Position (qty)", f"{pos:,.2f}"),
                 ("Position Value", f"${pos_value:,.2f}"),
@@ -725,11 +579,16 @@ def main():
             if rel_dexp is not None:
                 metric_items.append(("Dollar Exposure (avg)", f"{rel_dexp*100:,.1f}%"))
 
-            per_row = 5
+            per_row = 6
+            card_style = "font-size:0.8rem; color:#a0a0a0; margin-bottom:0.15rem;"
+            value_style = "font-size:1.05rem; font-weight:600; margin:0;"
             for i in range(0, len(metric_items), per_row):
                 cols = st.columns(per_row)
                 for col, (label, value) in zip(cols, metric_items[i : i + per_row]):
-                    col.metric(label, value)
+                    col.markdown(
+                        f"<div style='{card_style}'>{label}</div><div style='{value_style}'>{value}</div>",
+                        unsafe_allow_html=True,
+                    )
 
             # Now render equity chart below the KPIs
             x = [_dt.datetime.fromtimestamp(ts).isoformat(timespec="seconds") for ts in t_raw]
@@ -739,7 +598,7 @@ def main():
         else:
             st.caption("No P&L data yet. Send an order to create fills or wait for ticks.")
 
-    with tabs[3]:
+    with tab_strategy:
         st.subheader("Strategy Host")
         spath_in = st.text_input("Strategy path", value=st.session_state.strategy_path)
         base_dir = Path(__file__).resolve().parents[1]
@@ -768,6 +627,15 @@ def main():
         topic_str = st.text_input("Tick topic (empty=all)", value="X")
         conflate = st.checkbox("Conflate latest only (ticks)", value=False, key="strategy_conflate")
         params_json = st.text_area("PARAMS override (JSON)", value="", placeholder='{"fast": 20, "slow": 50, "qty": 1, "threshold_bps": 15, "min_interval_s": 10}')
+        stop_mode = st.radio(
+            "Stop action",
+            ("Flatten position", "Terminate only"),
+            index=0,
+            key="strategy_stop_mode",
+            horizontal=True,
+            help="Choose whether to send a flattening market order before shutting down the host.",
+        )
+        flatten_on_stop = stop_mode == "Flatten position"
         sbtn = st.columns(2)
         if sbtn[0].button("Start strategy host"):
             try:
@@ -825,6 +693,52 @@ def main():
                         p.kill()
                     unregister_pid(p.pid)
                     st.success("Strategy host stopped")
+                    if flatten_on_stop and sid:
+                        def _strategy_net_position(strategy_id: str) -> float:
+                            total = 0.0
+                            for _, f in st.session_state.fills:
+                                if f.get("strategy_id") != strategy_id:
+                                    continue
+                                qty = float(f.get("qty", 0.0))
+                                side_txt = str(f.get("side", "")).upper()
+                                total += qty if side_txt == "BUY" else -qty
+                            return total
+
+                        net_pos = _strategy_net_position(sid)
+                        if abs(net_pos) > 1e-9:
+                            close_side = "SELL" if net_pos > 0 else "BUY"
+                            close_qty = abs(net_pos)
+
+                            def _send_flatten_order(side: str, qty: float) -> None:
+                                cfg_loc = st.session_state.get("cfg", load_config(None))
+                                t_local = Transport(
+                                    hwm_ticks=int(cfg_loc["transport"]["hwm"]["ticks_pub"]),
+                                    hwm_orders=int(cfg_loc["transport"]["hwm"]["orders"]),
+                                    hwm_fills=int(cfg_loc["transport"]["hwm"]["fills_pub"]),
+                                )
+                                push_socket = t_local.connect_push(cfg_loc["transport"]["endpoints"]["orders_push"])
+                                import zmq as _zmq
+
+                                push_socket.setsockopt(_zmq.LINGER, 500)
+                                payload = {
+                                    "strategy_id": sid,
+                                    "side": side,
+                                    "qty": float(qty),
+                                    "tag": "auto_flatten",
+                                }
+                                Transport.send_json_push(push_socket, payload)
+                                time.sleep(0.01)
+                                push_socket.close()
+
+                            try:
+                                _send_flatten_order(close_side, close_qty)
+                                st.info(
+                                    f"Requested {close_side} {close_qty:g} to flatten strategy '{sid}'. Check fills to confirm."
+                                )
+                            except Exception as err:
+                                st.error(f"Failed to send flatten order: {err}")
+                        else:
+                            st.info("Strategy position already flat.")
                 except Exception as e:
                     st.error(f"Failed to stop strategy host: {e}")
             else:
@@ -842,10 +756,16 @@ def main():
                 lines = []
         else:
             lines = []
-        if lines:
-            st.text("\n".join(lines[-200:]))
-        else:
+        if not lines:
             st.caption("No logs yet.")
+        st.text_area(
+            "Log output",
+            value="\n".join(reversed(lines[-400:])) if lines else "",
+            height=240,
+            key="strategy_logs_view",
+            help="Most recent strategy host log lines.",
+            disabled=True,
+        )
 
         st.divider()
         st.subheader("Manage Strategy Hosts")
@@ -872,6 +792,219 @@ def main():
                     remaining.append(pid)
             write_pid_registry(remaining)
             st.success(f"Sent SIGTERM to: {stopped}. Remaining tracked: {remaining}")
+
+    with tab_admin:
+        st.subheader("Listener Settings")
+        listener_cols = st.columns(3)
+        with listener_cols[0]:
+            st.checkbox("Conflate latest only", key="conflate")
+        with listener_cols[1]:
+            st.checkbox("Auto-refresh", key="auto_refresh")
+        with listener_cols[2]:
+            st.button("Refresh now", on_click=lambda: None)
+        st.slider("Refresh rate (Hz)", 1, 20, key="refresh_hz")
+
+        st.divider()
+        st.subheader("Diagnostics")
+        diag_col1, diag_col2 = st.columns(2)
+        tick_feedback = diag_col1.empty()
+        fill_feedback = diag_col2.empty()
+        test_window_s = 3.0
+        if diag_col1.button(f"Test receive ({int(test_window_s)}s)"):
+            try:
+                t = Transport(hwm_ticks=int(cfg["transport"]["hwm"]["ticks_pub"]))
+                sub = t.connect_sub(cfg["transport"]["endpoints"]["ticks_pub"], topic="X", conflate=False)
+                time.sleep(0.1)  # allow subscription handshake
+                poller = zmq.Poller(); poller.register(sub, zmq.POLLIN)
+                import time as _time
+
+                start = _time.time(); cnt = 0; last = None
+                while _time.time() - start < test_window_s:
+                    socks = dict(poller.poll(timeout=100))
+                    if sub in socks and socks[sub] == zmq.POLLIN:
+                        _, payload = t.recv_json(sub)
+                        cnt += 1; last = payload
+                sub.close(0)
+                st.session_state.test_recv_stats = {
+                    "count": cnt,
+                    "last_price": (last or {}).get("price"),
+                    "last_seq": (last or {}).get("seq"),
+                    "window_s": test_window_s,
+                    "ts": _time.strftime("%Y-%m-%d %H:%M:%S"),
+                }
+                if cnt > 0:
+                    price_val = st.session_state.test_recv_stats.get("last_price")
+                    price_str = f"{float(price_val):.5f}" if price_val not in (None, "") else "n/a"
+                    tick_feedback.success(
+                        f"{cnt} messages in ~{test_window_s:.0f}s | last price={price_str} seq={st.session_state.test_recv_stats.get('last_seq', '-') }"
+                    )
+                else:
+                    tick_feedback.info(f"No ticks observed in ~{test_window_s:.0f}s window.")
+            except Exception as e:
+                tick_feedback.error(f"Test receive failed: {e}")
+        if diag_col2.button(f"Test fills ({int(test_window_s)}s)"):
+            try:
+                t = Transport(hwm_ticks=int(cfg["transport"]["hwm"]["fills_pub"]))
+                sub = t.connect_sub(cfg["transport"]["endpoints"]["fills_pub"], topic="", conflate=False)
+                time.sleep(0.1)  # allow subscription handshake
+                poller = zmq.Poller(); poller.register(sub, zmq.POLLIN)
+                import time as _time
+
+                start = _time.time(); cnt = 0; last = None
+                while _time.time() - start < test_window_s:
+                    socks = dict(poller.poll(timeout=100))
+                    if sub in socks and socks[sub] == zmq.POLLIN:
+                        _, payload = t.recv_json(sub)
+                        cnt += 1; last = payload
+                sub.close(0)
+                st.session_state.test_fills_stats = {
+                    "count": cnt,
+                    "last_price": (last or {}).get("fill_price"),
+                    "last_qty": (last or {}).get("qty"),
+                    "last_side": (last or {}).get("side"),
+                    "window_s": test_window_s,
+                    "ts": _time.strftime("%Y-%m-%d %H:%M:%S"),
+                }
+                if cnt > 0:
+                    price_val = st.session_state.test_fills_stats["last_price"]
+                    price_str = f"{price_val:.5f}" if price_val is not None else "n/a"
+                    fill_feedback.success(
+                        f"{cnt} fills in ~{test_window_s:.0f}s | last {st.session_state.test_fills_stats['last_side']} {st.session_state.test_fills_stats['last_qty']} @ {price_str}"
+                    )
+                else:
+                    fill_feedback.info(f"No fills observed in ~{test_window_s:.0f}s window.")
+            except Exception as e:
+                fill_feedback.error(f"Test fills failed: {e}")
+        tr = st.session_state.get("test_recv_stats")
+        if tr:
+            price_val = tr.get("last_price")
+            price_str = f"{float(price_val):.5f}" if price_val not in (None, "") else "n/a"
+            st.caption(
+                f"Last receive test @ {tr['ts']}: count={tr['count']} over ~{tr['window_s']:.0f}s | last_price={price_str} | last_seq={tr.get('last_seq', '-') }"
+            )
+        trf = st.session_state.get("test_fills_stats")
+        if trf:
+            price_val = trf.get("last_price")
+            price_str = f"{float(price_val):.5f}" if price_val not in (None, "") else "n/a"
+            side = trf.get("last_side", "-")
+            qty = trf.get("last_qty", "-")
+            st.caption(
+                f"Last fills test @ {trf['ts']}: count={trf['count']} over ~{trf['window_s']:.0f}s | last {side} {qty} @ {price_str}"
+            )
+
+        st.divider()
+        st.subheader("Local Processes")
+        broker_cols = st.columns(2)
+        if broker_cols[0].button("Start local broker"):
+            try:
+                if st.session_state.proc_broker and st.session_state.proc_broker.is_alive():
+                    broker_cols[0].warning("Broker already running")
+                else:
+                    run_id = new_run_id()
+                    p = mp.Process(target=_proc_broker_entry, args=(cfg, run_id), daemon=True)
+                    p.start(); st.session_state.proc_broker = p
+                    broker_cols[0].success(f"Broker started (pid={p.pid})")
+            except Exception as e:
+                broker_cols[0].error(f"Failed to start broker: {e}")
+        if broker_cols[1].button("Stop local broker"):
+            p = st.session_state.proc_broker
+            if p and p.is_alive():
+                p.terminate(); p.join(timeout=1)
+                broker_cols[1].success("Broker stopped")
+            else:
+                broker_cols[1].info("Broker not running")
+        sim_cols = st.columns(2)
+        if sim_cols[0].button("Start local simulator"):
+            try:
+                if st.session_state.proc_sim and st.session_state.proc_sim.is_alive():
+                    sim_cols[0].warning("Simulator already running")
+                else:
+                    run_id = new_run_id()
+                    p = mp.Process(target=_proc_sim_entry, args=(cfg, run_id), daemon=True)
+                    p.start(); st.session_state.proc_sim = p
+                    sim_cols[0].success(f"Simulator started (pid={p.pid})")
+            except Exception as e:
+                sim_cols[0].error(f"Failed to start simulator: {e}")
+        if sim_cols[1].button("Stop local simulator"):
+            p = st.session_state.proc_sim
+            if p and p.is_alive():
+                p.terminate(); p.join(timeout=1)
+                sim_cols[1].success("Simulator stopped")
+            else:
+                sim_cols[1].info("Simulator not running")
+
+        st.divider()
+        st.subheader("Metrics Settings")
+        default_ann = int(3600 * 24 * 252)
+        st.number_input(
+            "Sharpe annualization factor",
+            min_value=1,
+            value=st.session_state.get("ann_factor", default_ann),
+            key="ann_factor",
+            help="Scale per-step Sharpe to annualized (e.g., trading-seconds-per-year)",
+        )
+
+        st.divider()
+        st.subheader("Status")
+        ep = cfg["transport"]["endpoints"]["ticks_pub"]
+        ep_f = cfg["transport"]["endpoints"]["fills_pub"]
+        status_cols = st.columns(2)
+        with status_cols[0]:
+            st.write(f"Ticks endpoint: `{ep}`")
+            st.write(f"Fills endpoint: `{ep_f}`")
+            st.write(f"Queue size: {st.session_state.queue.qsize()}")
+        with status_cols[1]:
+            th = st.session_state.listener_thread
+            fth = st.session_state.fills_thread
+            st.write(f"Listener alive: {bool(th and th.is_alive())}")
+            st.write(f"Fills listener alive: {bool(fth and fth.is_alive())}")
+            last = st.session_state.get("last_recv_ts")
+            st.write(f"Last received: {last if last else 'none yet'}")
+        if _LAST_THREAD_ERROR:
+            st.error(_LAST_THREAD_ERROR)
+        atimes = st.session_state.get("arrival_times", deque())
+        rate = 0.0
+        if atimes:
+            cutoff = time.time() - 5.0
+            recent = [t for t in atimes if t >= cutoff]
+            if len(recent) >= 2:
+                dur = max(1e-6, (recent[-1] - recent[0]))
+                rate = len(recent) / dur
+        metric_cols = st.columns(3)
+        metric_cols[0].metric("Approx ticks/sec", f"{rate:.1f}")
+        metric_cols[1].metric("Seq gaps", st.session_state.get("gap_count", 0))
+        metric_cols[2].metric("UI fills captured", len(st.session_state.fills))
+        if not (st.session_state.listener_thread and st.session_state.listener_thread.is_alive()):
+            st.caption("UI fills update only while the main listener (Start SUB) is running.")
+
+        st.divider()
+        st.subheader("Config")
+        cfg_path = st.text_input("Config path", value="configs/default.yaml")
+        base_dir = Path(__file__).resolve().parents[1]
+        resolved = Path(cfg_path)
+        if not resolved.is_absolute():
+            resolved = base_dir / resolved
+        if st.button("Load config"):
+            try:
+                st.session_state.cfg = load_config(str(resolved))
+                st.session_state.cfg_path = str(resolved)
+                cfg = st.session_state.cfg
+                try:
+                    init_cash = float(cfg.get("portfolio", {}).get("initial_cash", 100000.0))
+                except Exception:
+                    init_cash = 100000.0
+                st.session_state.initial_cash = init_cash
+                st.session_state.pos = 0.0
+                st.session_state.cash = init_cash
+                st.session_state.last_price = None
+                st.session_state.pnl = deque(maxlen=2000)
+                st.session_state.fills = deque(maxlen=500)
+                st.session_state.pos_series = deque(maxlen=2000)
+                st.success(f"Loaded config: {resolved} (initial cash set to ${init_cash:,.2f})")
+            except Exception as e:
+                st.error(f"Failed to load config: {e}")
+        st.caption(f"Using config: {resolved}")
+        st.code(json.dumps(cfg["transport"], indent=2))
 
     if st.session_state.get("auto_refresh", True):
         st_autorefresh = st.empty()

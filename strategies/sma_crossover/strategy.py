@@ -1,7 +1,7 @@
 # This is the SMA Strategy file.
 
 NAME = "Price vs SMA Crossover"
-PARAMS = {"window": 50, "qty": 100, "threshold_bps": 10.0, "min_interval_s": 5.0}
+PARAMS = {"window": 50, "qty": 50, "threshold_bps": 10.0, "min_interval_s": 5.0}
 
 
 def init(ctx):

@@ -12,16 +12,22 @@ from typing import Any, Callable, Dict, Optional
 
 import zmq
 
-from .transport import Transport
 import os
 
+from .transport import Transport
+
 _LOG_FILE = None
+_TICK_REPORT_INTERVAL = 5.0
 
 
 def _log(msg: str) -> None:
     global _LOG_FILE
+    from datetime import datetime
+
+    stamp = datetime.utcnow().isoformat(timespec="seconds")
+    formatted = f"[{stamp}] {msg}"
     try:
-        print(msg, flush=True)
+        print(formatted, flush=True)
     except Exception:
         pass
     try:
@@ -29,7 +35,7 @@ def _log(msg: str) -> None:
         if path:
             if _LOG_FILE is None:
                 _LOG_FILE = open(path, "a", buffering=1)
-            _LOG_FILE.write(msg + "\n")
+            _LOG_FILE.write(formatted + "\n")
     except Exception:
         pass
 
@@ -190,8 +196,9 @@ def run(
                         _log(f"[host] on_tick error: {e}")
 
             now = time.time()
-            if now - t_last >= 1.0:
-                _log(f"[host] ticks last 1s: {tick_count}")
+            if now - t_last >= _TICK_REPORT_INTERVAL:
+                elapsed = now - t_last
+                _log(f"[host] ticks last {elapsed:.1f}s: {tick_count}")
                 tick_count = 0
                 t_last = now
 
