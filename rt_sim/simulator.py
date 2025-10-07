@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import math
 import time
-from typing import Dict
+from typing import Dict, Optional
+from pathlib import Path
 
 import numpy as np
 
 from .models import Tick
 from .transport import Transport
 from .utils import new_run_id
+from .recorder import RunRecorder
 
 
 def _next_dt_seconds(cfg: Dict) -> float:
@@ -38,7 +40,12 @@ def _x_to_price(x: float, P0: float) -> float:
     return float(P0 * math.exp(x))
 
 
-def run(config: Dict, transport: Transport, run_id: str | None = None) -> None:
+def run(
+    config: Dict,
+    transport: Transport,
+    run_id: str | None = None,
+    export_dir: str | Path | None = None,
+) -> None:
     """Run the market simulator publishing ticks over ZMQ PUB.
 
     Config expects keys under `model`, `schedule`, and `transport.endpoints.ticks_pub`.
@@ -66,6 +73,10 @@ def run(config: Dict, transport: Transport, run_id: str | None = None) -> None:
 
     duration_s = float(config.get("run", {}).get("duration_s", 0))
 
+    recorder: Optional[RunRecorder] = None
+    if export_dir is not None:
+        recorder = RunRecorder(export_dir, enable_ticks=True)
+
     try:
         while True:
             dt = _next_dt_seconds(config)
@@ -89,9 +100,14 @@ def run(config: Dict, transport: Transport, run_id: str | None = None) -> None:
                 f"[tick] run_id={run_id} seq={seq} ts_sim={t_sim:.3f}s price={price:.5f} dt_ms={dt*1000:.0f}",
                 flush=True,
             )
+            if recorder:
+                recorder.log_tick(tick.model_dump())
 
             # optional stop
             if duration_s and (t_sim >= duration_s or (time.time() - t_start_wall) >= duration_s * 2):
                 break
     except KeyboardInterrupt:
         pass
+    finally:
+        if recorder:
+            recorder.close()

@@ -1,0 +1,48 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.12.11, pytest-8.4.2, pluggy-1.6.0
+rootdir: /Users/yves/Dropbox/Program/cpf/57_ai_assistants/algosim
+configfile: pyproject.toml
+collected 9 items
+
+tests/test_mean_reversion.py .F                                          [ 22%]
+tests/test_metrics.py ....                                               [ 66%]
+tests/test_ou.py .                                                       [ 77%]
+tests/test_recorder.py .                                                 [ 88%]
+tests/test_transport.py .                                                [100%]
+
+=================================== FAILURES ===================================
+_________________ test_mean_reversion_trend_guard_blocks_entry _________________
+
+    def test_mean_reversion_trend_guard_blocks_entry():
+        params = {
+            "fast_window": 2,
+            "slow_window": 4,
+            "entry_threshold_bps": 2.0,
+            "exit_threshold_bps": 1.0,
+            "qty": 5.0,
+            "cooldown_s": 0.0,
+        }
+        ctx = DummyCtx(params)
+        mr.init(ctx)
+        # Warm-up sequence that creates slow < fast
+        prices = [100.0, 100.0, 100.0, 120.0]
+        ts = 0.0
+        for price in prices:
+            mr.on_tick(ctx, _tick(price, ts))
+            ts += 1.0
+>       assert ctx.orders == []
+E       AssertionError: assert [{'qty': 5.0,..._1428.57bps'}] == []
+E         
+E         Left contains one more item: {'qty': 5.0, 'side': 'SELL', 'tag': 'mr_target_-5.0_1428.57bps'}
+E         Use -v to get more diff
+
+tests/test_mean_reversion.py:110: AssertionError
+=============================== warnings summary ===============================
+tests/test_recorder.py::test_prepare_and_record
+  /Users/yves/Dropbox/Program/cpf/57_ai_assistants/algosim/rt_sim/recorder.py:22: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "created_utc": datetime.utcnow().isoformat(timespec="seconds"),
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_mean_reversion.py::test_mean_reversion_trend_guard_blocks_entry
+==================== 1 failed, 8 passed, 1 warning in 0.31s ====================

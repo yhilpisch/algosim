@@ -37,8 +37,15 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "commission_fixed": 0.0,
     },
     "strategy": {
-        "path": "strategies/sma_crossover/strategy.py",
-        "params": {"fast": 20, "slow": 50, "qty": 1},
+        "path": "strategies/mean_reversion/strategy.py",
+        "params": {
+            "fast_window": 10,
+            "slow_window": 40,
+            "entry_threshold_bps": 6.0,
+            "exit_threshold_bps": 1.5,
+            "qty": 25,
+            "cooldown_s": 3.0,
+        },
     },
     "portfolio": {"initial_cash": 100000.0},
     "run": {"seed": 42, "duration_s": 0, "export_dir": "runs/last"},

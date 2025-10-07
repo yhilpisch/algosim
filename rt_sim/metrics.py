@@ -16,6 +16,7 @@ def compute_drawdown(equity: Sequence[float]) -> Tuple[float, int, int]:
     peak_i = 0
     max_dd = 0.0
     max_i = 0
+    max_peak_i = 0
     for i, v in enumerate(equity):
         if v > peak:
             peak = v
@@ -24,7 +25,8 @@ def compute_drawdown(equity: Sequence[float]) -> Tuple[float, int, int]:
         if dd > max_dd:
             max_dd = dd
             max_i = i
-    return max_dd, peak_i, max_i
+            max_peak_i = peak_i
+    return max_dd, max_peak_i, max_i
 
 
 def compute_sharpe_from_equity(equity: Sequence[float], rf_per_period: float = 0.0, annualization_factor: float = 252.0) -> float:

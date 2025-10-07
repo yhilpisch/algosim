@@ -28,6 +28,14 @@ dist/
 
 # Project artifacts
 runs/
+runs/**/*.json
+runs/**/*.jsonl
+runs/**/*.csv
+runs/**/*.log
+runs/**/*.yaml
+!runs/.gitkeep
+runs/**/strategy_host_*.log
+runs/**/strategy_hosts.json
 
 # Streamlit
 .streamlit/**/credentials.toml

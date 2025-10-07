@@ -161,7 +161,7 @@ def ensure_state():
     if "auto_refresh" not in st.session_state:
         st.session_state.auto_refresh = True
     if "refresh_hz" not in st.session_state:
-        st.session_state.refresh_hz = 5
+        st.session_state.refresh_hz = 1
     if "pos" not in st.session_state:
         st.session_state.pos = 0.0
     if "cash" not in st.session_state:
@@ -173,6 +173,10 @@ def ensure_state():
             st.session_state.cash = 100000.0
     if "last_price" not in st.session_state:
         st.session_state.last_price = None
+    if "last_portfolio" not in st.session_state:
+        st.session_state.last_portfolio = None
+    if "last_run_id" not in st.session_state:
+        st.session_state.last_run_id = None
     if "proc_broker" not in st.session_state:
         st.session_state.proc_broker = None
     if "proc_sim" not in st.session_state:
@@ -180,7 +184,7 @@ def ensure_state():
     if "proc_strategy" not in st.session_state:
         st.session_state.proc_strategy = None
     if "strategy_path" not in st.session_state:
-        st.session_state.strategy_path = "strategies/sma_crossover/strategy.py"
+        st.session_state.strategy_path = "strategies/mean_reversion/strategy.py"
     if "strategy_code" not in st.session_state:
         try:
             st.session_state.strategy_code = Path(st.session_state.strategy_path).read_text()
@@ -283,11 +287,11 @@ def start_listener(cfg):
                 if sub2 in socks2 and socks2[sub2] == zmq.POLLIN:
                     topic, payload = t2.recv_json(sub2)
                     try:
-                        fq_out.put_nowait((payload.get("ts_wall", time.time()), payload))
+                        fq_out.put_nowait((topic, payload))
                     except Full:
                         try:
                             fq_out.get_nowait()
-                            fq_out.put_nowait((payload.get("ts_wall", time.time()), payload))
+                            fq_out.put_nowait((topic, payload))
                         except Exception:
                             pass
             sub2.close(0)
@@ -370,37 +374,66 @@ def main():
         import datetime as _dt
 
         st.session_state.last_recv_ts = _dt.datetime.now().isoformat(timespec="seconds")
-        # Update equity on tick if we have price
-        if st.session_state.last_price is not None:
-            eq = st.session_state.cash + st.session_state.pos * float(st.session_state.last_price)
-            ts_now = time.time()
-            st.session_state.pnl.append((ts_now, eq))
-            st.session_state.pos_series.append((ts_now, st.session_state.pos))
 
     # Drain fills queue
     fdrained = 0
     try:
         while True:
-            tsf, payload = st.session_state.fills_queue.get_nowait()
-            st.session_state.fills.append((tsf, payload))
-            # Update position and cash
-            side = str(payload.get("side", "")).upper()
-            qty = float(payload.get("qty", 0.0))
-            price = float(payload.get("fill_price", 0.0))
-            commission = float(payload.get("commission", 0.0))
-            if side == "BUY":
-                st.session_state.pos += qty
-                st.session_state.cash -= price * qty + commission
-            elif side == "SELL":
-                st.session_state.pos -= qty
-                st.session_state.cash += price * qty - commission
-            payload["pos_after"] = st.session_state.pos
-            # Equity snapshot at fill
-            last_px = st.session_state.last_price if st.session_state.last_price is not None else price
-            eq = st.session_state.cash + st.session_state.pos * float(last_px)
-            st.session_state.pnl.append((tsf, eq))
-            st.session_state.pos_series.append((tsf, st.session_state.pos))
-            fdrained += 1
+            topic, payload = st.session_state.fills_queue.get_nowait()
+            if topic == "portfolio" or payload.get("type") == "portfolio":
+                st.session_state.last_portfolio = payload
+                st.session_state.pos = float(payload.get("pos", st.session_state.pos))
+                st.session_state.cash = float(payload.get("cash", st.session_state.cash))
+                last_px = payload.get("last_price", st.session_state.last_price)
+                if last_px is not None:
+                    st.session_state.last_price = float(last_px)
+                tsw = float(payload.get("ts_wall", time.time()))
+                eq = float(payload.get("equity", st.session_state.cash + st.session_state.pos * float(st.session_state.last_price or 0.0)))
+                st.session_state.pnl.append((tsw, eq))
+                st.session_state.pos_series.append((tsw, st.session_state.pos))
+                run_id = payload.get("run_id")
+                if run_id:
+                    st.session_state.last_run_id = run_id
+            else:
+                tsf = float(payload.get("ts_wall", time.time()))
+                st.session_state.fills.append((tsf, payload))
+                pos_after = payload.get("pos_after")
+                cash_after = payload.get("cash_after")
+                equity_after = payload.get("equity_after")
+                if pos_after is not None:
+                    st.session_state.pos = float(pos_after)
+                else:
+                    side = str(payload.get("side", "")).upper()
+                    qty = float(payload.get("qty", 0.0))
+                    if side == "BUY":
+                        st.session_state.pos += qty
+                    elif side == "SELL":
+                        st.session_state.pos -= qty
+                if cash_after is not None:
+                    st.session_state.cash = float(cash_after)
+                else:
+                    qty = float(payload.get("qty", 0.0))
+                    price = float(payload.get("fill_price", 0.0))
+                    commission = float(payload.get("commission", 0.0))
+                    side = str(payload.get("side", "")).upper()
+                    if side == "BUY":
+                        st.session_state.cash -= price * qty + commission
+                    elif side == "SELL":
+                        st.session_state.cash += price * qty - commission
+                last_px = payload.get("fill_price", st.session_state.last_price)
+                if last_px is not None:
+                    st.session_state.last_price = float(last_px)
+                if equity_after is not None:
+                    eq_val = float(equity_after)
+                else:
+                    px = st.session_state.last_price if st.session_state.last_price is not None else 0.0
+                    eq_val = st.session_state.cash + st.session_state.pos * float(px)
+                st.session_state.pnl.append((tsf, eq_val))
+                st.session_state.pos_series.append((tsf, st.session_state.pos))
+                fdrained += 1
+                run_id = payload.get("run_id")
+                if run_id:
+                    st.session_state.last_run_id = run_id
     except Empty:
         pass
 
@@ -810,6 +843,11 @@ def main():
         with listener_cols[2]:
             st.button("Refresh now", on_click=lambda: None)
         st.slider("Refresh rate (Hz)", 1, 20, key="refresh_hz")
+
+        run_id = st.session_state.get("last_run_id")
+        if run_id:
+            export_base = Path(cfg.get("run", {}).get("export_dir", "runs/last"))
+            st.caption(f"Latest run artifacts: {export_base / run_id}")
 
         st.divider()
         st.subheader("Diagnostics")

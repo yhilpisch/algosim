@@ -17,10 +17,13 @@ Author: Dr. Yves J. Hilpisch — The Python Quants GmbH
     - Fills / Orders: manual BUY/SELL on orders_push, scrollable fill history, contextual warnings
     - P&L: dense 6-per-row KPI grid (Position, Value, Cash, Equity, MaxDD, Sharpe, Exposure, Win Rate, Avg Trade P/L, Avg Hold, Dollar Exposure) + equity chart
     - Strategy: inline code editor for `strategy.py`, Start/Stop strategy host, PARAMS override (JSON), tick topic, conflation toggle, auto-flatten option on stop, and timestamped live logs in a scrollable pane
-    - Admin: listener controls, diagnostics (3s receive/fill probes), status dashboard, local process management, metrics settings, config loader, strategy host registry tools
+    - Admin: listener controls, diagnostics (3s receive/fill probes), status dashboard, local process management, metrics settings, config loader, strategy host registry tools, latest recording path hint
   - Start/Stop SUB quick controls remain in the sidebar for convenience
   - Status/diagnostics distinguish between listener-derived metrics and test probes
-- Strategy Runner: SMA crossover (`strategies/sma_crossover/run_sma.py`) with hysteresis and min-interval
+- Built-in Strategies:
+  - Mean-reversion fade (`strategies/mean_reversion/strategy.py`): targets ±qty positions when price deviates from a slow SMA beyond configurable entry/exit bands, with trend-aware guardrails and cooldown
+  - SMA crossover (`strategies/sma_crossover/strategy.py` / `strategies/sma_crossover/run_sma.py`)
+- Recorder: captures ticks, orders, fills, config, and seed to `runs/<export>/<run_id>/` (JSONL + CSV) for deterministic replays (`sim report`, `sim replay`)
 - Config: YAML (`configs/default.yaml`) incl. `portfolio.initial_cash` (default 100,000)
 
 See `outline.md` for the full specification and roadmap.
@@ -57,9 +60,9 @@ In the UI sidebar:
 
 Use the Strategy tab to edit and run a strategy with the built‑in host:
 
-- Strategy path: defaults to `strategies/sma_crossover/strategy.py` (resolved relative to project root)
+- Strategy path: defaults to `strategies/mean_reversion/strategy.py` (resolved relative to project root); SMA crossover remains available at `strategies/sma_crossover/strategy.py`
 - Load file / Save file: edit the file inline
-- PARAMS override (JSON): e.g. `{ "window": 30, "qty": 1, "threshold_bps": 5, "min_interval_s": 3 }`
+- PARAMS override (JSON): e.g. `{ "fast_window": 10, "slow_window": 40, "entry_threshold_bps": 6, "exit_threshold_bps": 2, "qty": 20, "cooldown_s": 4 }`
 - Strategy ID: topic used for fills (e.g., `sma1`)
 - Tick topic: `X` (default asset) or empty to subscribe to all
 - Start strategy host: launches a subprocess and shows Live Logs (written to `runs/strategy_host_*.log`)
@@ -67,6 +70,19 @@ Use the Strategy tab to edit and run a strategy with the built‑in host:
 - Stop ALL strategy hosts: sends SIGTERM to all tracked strategy host PIDs (`runs/strategy_hosts.json`)
 
 The example strategy template implements price‑vs‑SMA crossover with a no‑trade band (threshold_bps) and a cooldown (min_interval_s) to limit churn.
+
+### Recording & Replay
+
+- Every `sim run` stores artifacts under `run.export_dir/<run_id>/` (default `runs/last/<run_id>`)
+- Inspect a run with `python -m rt_sim.cli report runs/last/<run_id>` — prints counts and metadata
+- Re-broadcast ticks using `python -m rt_sim.cli replay runs/last/<run_id> --speed 2.0 --echo`
+- Artifacts include JSONL + CSV for ticks/orders/fills plus `config_used.yaml` and `meta.json` (seed + timestamps)
+
+### Testing
+
+- Install deps: `pip install -r requirements.txt`
+- Run the suite: `python -m pytest`
+- Coverage includes metrics, OU stepper, transport smoke tests, recorder persistence, and mean-reversion signal logic
 
 ## Strategy Runner (SMA Crossover)
 
@@ -105,5 +121,5 @@ The app will display resulting fills and live P&L. Trades also appear on the liv
 
 ## Status (MVP)
 
-- Implemented: simulator, ZMQ transport, Streamlit subscriber, CLI, strategy template
-- Next: broker + portfolio + fills, strategy host, recorder, metrics, tests
+- Implemented: OU simulator, broker with execution costs + portfolio snapshots, ZeroMQ transport, Streamlit UI (ticks/fills/P&L/strategy/admin), CLI (`run`, `run-strategy`, `new-strategy`, `report`, `replay`), SMA strategy host, SMA & mean-reversion example strategies, recorder exports, metrics helpers, and unit/smoke tests (metrics, transport, recorder, strategies)
+- Next: headless evaluation workflow (`sim eval`) for deterministic comparisons, strategy linting (`sim doctor`), richer analytics/metrics dashboards, CI integration for tests, and additional strategy templates
